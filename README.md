@@ -1,5 +1,9 @@
 # PORTsMENU
 
+<p align="center">
+  <img src="docs/COVER.jpg" alt="PORTsMENU" width="432"/>
+</p>
+
 **Launcher de homebrew para PlayStation 2** — un menú tipo "multijuego" hecho desde cero (C puro, sin gsKit ni libgraph) que escanea automáticamente tus juegos, muestra covers con animaciones y los lanza. Todo empaquetado en **una sola ISO autocontenida**, al estilo de los ports clásicos de la escena.
 
 ```
