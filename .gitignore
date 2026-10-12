@@ -1,0 +1,20 @@
+# build output
+build/
+*.iso
+*.elf
+*.o
+*.obj
+
+# tools binarios
+tools/mkiso.exe
+tools/msys-2.0.dll
+
+# logs
+PORTMENU.log
+*.log
+
+# datos de usuario / juegos pesados (van fuera del repo)
+ELFS/
+build/ART/
+EJEMPLO/
+tools/gcc_err.txt
