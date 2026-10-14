@@ -51,16 +51,11 @@ void gs_log(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    
-    FILE *f = fopen("host:PORTMENU.log", "a");
-    if (f) {
-        vfprintf(f, fmt, args);
-        fputc('\n', f);
-        fclose(f);
-    }
+
+    /* stdout siempre seguro (consola PCSX2 y UART) - sin host: que cuelga PS2 real */
     vprintf(fmt, args);
     printf("\n");
-    
+
     va_end(args);
 }
 
@@ -159,6 +154,10 @@ static u64 make_uv(float u, float v)
 
 static u64 make_xyz(float x, float y, float z)
 {
+    if (x < 0.0f) x = 0.0f;
+    if (y < 0.0f) y = 0.0f;
+    if (x > 2047.0f) x = 2047.0f;
+    if (y > 2047.0f) y = 2047.0f;
     return GIF_SET_XYZ((int)(x * 16.0f), (int)(y * 16.0f), (int)(z * 4096.0f));
 }
 
@@ -220,7 +219,7 @@ void gs_init(void)
     pkt_reg(0x40, make_scissor(0, SCREEN_W - 1, 0, SCREEN_H - 1));
     pkt_reg(0x47, 0);            /* TEST_1: todo desactivado */
     pkt_reg(0x42, 0x44);         /* ALPHA_1: blending estandar (como gsKit) */
-    pkt_reg(0x08, 0);            /* CLAMP_1: repeat */
+    pkt_reg(0x08, 0x5);          /* CLAMP_1: clamp UV (evita repeats en bordes) */
     pkt_reg(0x14, 0);            /* TEX1_1 */
     pkt_reg(0x1A, 1);            /* PRMODECONT */
     pkt_reg(0x3B, 0);            /* TEXA */
@@ -237,12 +236,24 @@ void gs_init(void)
 void gs_shutdown(void)
 {
     gs_log("gs: shutdown, VRAM used=%d KB", gs_vram_used / 1024);
+    /* Dejar la pantalla en negro limpio y esperar VSync para mantener la senal
+     * analógica activa en TVs CRT (evita que la tele pierda sincronismo y muestre VIDEO 1).
+     * NO resetear el GS (*GS_REG_CSR = 1 << 9) porque apaga el generador de reloj de video. */
+    GsColor black = {0.0f, 0.0f, 0.0f, 1.0f};
+    gs_frame_begin();
+    gs_clear(black);
+    gs_frame_end();
+    wait_vsync();
+
+    /* Esperar que cualquier DMA de GIF termine para dejar el canal listo al juego */
+    dma_channel_wait(DMA_CHANNEL_GIF, 0);
 }
 
 void gs_frame_begin(void)
 {
     p_n = 2;
     frame_count++;
+    bound_tex = NULL;
 }
 
 void gs_frame_end(void)
@@ -260,7 +271,7 @@ void gs_clear(GsColor color)
     pkt_reg(0x01, make_rgbaq((int)(color.r * 255), (int)(color.g * 255),
                              (int)(color.b * 255), (int)(color.a * 128), 0));
     pkt_reg(0x05, make_xyz(0, 0, 0));
-    pkt_reg(0x05, make_xyz(SCREEN_W << 4, SCREEN_H << 4, 0));
+    pkt_reg(0x05, make_xyz(SCREEN_W, SCREEN_H, 0));
 }
 
 void gs_clear_depth(void)
@@ -292,7 +303,13 @@ GsTexture *gs_texture_create(int w, int h, const u32 *rgba)
     gs_vram_used += bytes;
 
     u32 *pad = memalign(64, bytes);
-    if (!pad) { vram_free(t->vram); gs_vram_used -= bytes; free(t); return NULL; }
+    if (!pad) {
+        gs_log("gs: HEAP agotado para pad %dx%d (%d KB)", w, h, bytes / 1024);
+        vram_free(t->vram);
+        gs_vram_used -= bytes;
+        free(t);
+        return NULL;
+    }
     memset(pad, 0, bytes);
     for (int y = 0; y < h; y++)
         memcpy(&pad[y * t->pw], &rgba[y * w], w * 4);
@@ -308,7 +325,10 @@ GsTexture *gs_texture_create(int w, int h, const u32 *rgba)
             int qwc_data = (t->pw * rows * 4 + 15) / 16;
             int total = 10 + 2 + qwc_data * 2 + 4;
             u64 *b = memalign(64, total * 8);
-            if (!b) break;
+            if (!b) {
+                gs_log("gs: HEAP agotado para banda de subida (%d KB)", total * 8 / 1024);
+                break;
+            }
             int i = 0;
             b[i++] = GIF_SET_TAG(4, 0, 0, 0, GIF_FLG_PACKED, 1);
             b[i++] = GIF_REG_AD;
@@ -432,6 +452,85 @@ void gs_draw_sprite(const GsSprite *spr)
     GsTexture *tex = bound_tex;
     int has_tex = (tex != NULL);
 
+    float sx = spr->x;
+    float sy = spr->y;
+    float sw = spr->w * spr->scale_x;
+    float sh = spr->h * spr->scale_y;
+
+    if (sw <= 0.0f || sh <= 0.0f) return;
+
+    /* Clipeo seguro para sprites alineados (angle == 0) contra los limites
+       del framebuffer de PS2 [0, SCREEN_W] x [0, SCREEN_H].
+       Evita que coords negativas desborden el registro de 16 bits del GS y
+       generen bandas estiradas hacia la derecha al salir de pantalla. */
+    if (spr->angle == 0.0f) {
+        if (sx + sw <= 0.0f || sx >= (float)SCREEN_W || sy + sh <= 0.0f || sy >= (float)SCREEN_H)
+            return;
+
+        float su = spr->u;
+        float sv = spr->v;
+        float suw = spr->uw;
+        float svh = spr->vh;
+        float orig_sw = sw;
+        float orig_sh = sh;
+
+        if (sx < 0.0f) {
+            float clip = -sx;
+            float ratio = clip / orig_sw;
+            sx = 0.0f;
+            sw -= clip;
+            su += ratio * suw;
+            suw -= ratio * suw;
+        }
+        if (sx + sw > (float)SCREEN_W) {
+            float clip = (sx + sw) - (float)SCREEN_W;
+            float ratio = clip / orig_sw;
+            sw = (float)SCREEN_W - sx;
+            suw -= ratio * suw;
+        }
+        if (sy < 0.0f) {
+            float clip = -sy;
+            float ratio = clip / orig_sh;
+            sy = 0.0f;
+            sh -= clip;
+            sv += ratio * svh;
+            svh -= ratio * svh;
+        }
+        if (sy + sh > (float)SCREEN_H) {
+            float clip = (sy + sh) - (float)SCREEN_H;
+            float ratio = clip / orig_sh;
+            sh = (float)SCREEN_H - sy;
+            svh -= ratio * svh;
+        }
+
+        if (sw <= 0.0f || sh <= 0.0f) return;
+
+        u32 r = (spr->color >> 16) & 0xFF;
+        u32 g = (spr->color >> 8) & 0xFF;
+        u32 b = spr->color & 0xFF;
+        float af = ((spr->color >> 24) & 0xFF) / 255.0f * spr->alpha;
+        u32 a = (u32)(af * 128.0f);
+
+        if (has_tex) {
+            pkt_reg(0x00, make_prim(4, 0, 1, 0, 1, 0, 1, 0, 0));
+            pkt_reg(0x01, make_rgbaq(128, 128, 128, a, 0));
+            pkt_reg(0x03, make_uv(su, sv));
+            pkt_reg(0x05, make_xyz(sx, sy, 0));
+            pkt_reg(0x03, make_uv(su + suw, sv));
+            pkt_reg(0x05, make_xyz(sx + sw, sy, 0));
+            pkt_reg(0x03, make_uv(su, sv + svh));
+            pkt_reg(0x05, make_xyz(sx, sy + sh, 0));
+            pkt_reg(0x03, make_uv(su + suw, sv + svh));
+            pkt_reg(0x05, make_xyz(sx + sw, sy + sh, 0));
+        } else {
+            pkt_reg(0x00, make_prim(GIF_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
+            pkt_reg(0x01, make_rgbaq(r, g, b, a, 0));
+            pkt_reg(0x05, make_xyz(sx, sy, 0));
+            pkt_reg(0x05, make_xyz(sx + sw, sy + sh, 0));
+        }
+        return;
+    }
+
     float cx = spr->x + spr->w * 0.5f;
     float cy = spr->y + spr->h * 0.5f;
 
@@ -454,6 +553,13 @@ void gs_draw_sprite(const GsSprite *spr)
     float ry3 = x3 * sin_a + y3 * cos_a + cy;
     float rx4 = x4 * cos_a - y4 * sin_a + cx;
     float ry4 = x4 * sin_a + y4 * cos_a + cy;
+
+    /* Descarte si completamente fuera */
+    if ((rx1 < 0 && rx2 < 0 && rx3 < 0 && rx4 < 0) ||
+        (rx1 > SCREEN_W && rx2 > SCREEN_W && rx3 > SCREEN_W && rx4 > SCREEN_W) ||
+        (ry1 < 0 && ry2 < 0 && ry3 < 0 && ry4 < 0) ||
+        (ry1 > SCREEN_H && ry2 > SCREEN_H && ry3 > SCREEN_H && ry4 > SCREEN_H))
+        return;
 
     u32 r = (spr->color >> 16) & 0xFF;
     u32 g = (spr->color >> 8) & 0xFF;
@@ -510,6 +616,13 @@ void gs_draw_sprite_ex(float x, float y, float w, float h,
 
 void gs_draw_rect(float x, float y, float w, float h, GsColor color)
 {
+    if (x + w <= 0.0f || x >= (float)SCREEN_W || y + h <= 0.0f || y >= (float)SCREEN_H) return;
+    if (x < 0.0f) { w += x; x = 0.0f; }
+    if (y < 0.0f) { h += y; y = 0.0f; }
+    if (x + w > (float)SCREEN_W) w = (float)SCREEN_W - x;
+    if (y + h > (float)SCREEN_H) h = (float)SCREEN_H - y;
+    if (w <= 0.0f || h <= 0.0f) return;
+
     /* activar blending solo si es semitransparente */
     int abe = (color.a < 0.999f) ? 1 : 0;
     pkt_reg(0x00, make_prim(GIF_PRIM_SPRITE, 0, 0, 0, abe, 0, 0, 0, 0));
@@ -522,6 +635,11 @@ void gs_draw_rect(float x, float y, float w, float h, GsColor color)
 /* rect redondeado via TRIANGLEFAN: 4 arcos de esquina, poligono CERRADO */
 void gs_draw_rounded_rect(float x, float y, float w, float h, float r, GsColor color)
 {
+    if (x + w <= 0.0f || x >= (float)SCREEN_W || y + h <= 0.0f || y >= (float)SCREEN_H) return;
+    if (x < 0.0f || y < 0.0f || x + w > (float)SCREEN_W || y + h > (float)SCREEN_H) {
+        gs_draw_rect(x, y, w, h, color);
+        return;
+    }
     if (r > w * 0.5f) r = w * 0.5f;
     if (r > h * 0.5f) r = h * 0.5f;
     if (r < 2.0f) {
@@ -561,6 +679,13 @@ void gs_draw_rect_gradient(float x, float y, float w, float h,
                            GsColor c1, GsColor c2, int vertical)
 {
     (void)vertical;
+    if (x + w <= 0.0f || x >= (float)SCREEN_W || y + h <= 0.0f || y >= (float)SCREEN_H) return;
+    if (x < 0.0f) { w += x; x = 0.0f; }
+    if (y < 0.0f) { h += y; y = 0.0f; }
+    if (x + w > (float)SCREEN_W) w = (float)SCREEN_W - x;
+    if (y + h > (float)SCREEN_H) h = (float)SCREEN_H - y;
+    if (w <= 0.0f || h <= 0.0f) return;
+
     int abe = (c1.a < 0.999f || c2.a < 0.999f) ? 1 : 0;
     pkt_reg(0x00, make_prim(GIF_PRIM_SPRITE, 1, 0, 0, abe, 0, 0, 0, 0));
     pkt_reg(0x01, make_rgbaq((int)(c1.r * 255), (int)(c1.g * 255),

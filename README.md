@@ -16,18 +16,28 @@ Open source · PS2 (EE/IOP) · ISO9660 propio · C99
 ## Características
 
 - **Auto-escaneo de juegos**: copia un ELF a `ELFS/` y su cover a `ART/COV/` con el mismo nombre — aparece en el menú sin tocar nada más.
-- **Grid 4×2 con animaciones**: easing cúbico, zoom en la selección, borde pulsante, transiciones entre páginas.
-- **Covers y fondos**: soporta `JPG / PNG / BMP / TGA / GIF` (vía stb_image) con cache LRU en VRAM y downscale automático.
-- **Fondo global personalizable** + **pantalla de boot** personalizable.
-- **Renderer GS manual**: primitivas SPRITE / TRIANGLESTRIP / TRIANGLEFAN, blending, texturas RGBA32 subidas por bandas DMA (sin romper el límite de 16 bits de QWC).
+- **Carrusel 3D estilo Aurora**: cover central grande con marco pulsante y flotado, vecinos escalonados a los lados con reflejo en el piso, transiciones deslizantes suaves.
+- **Covers y fondos**: soporta `JPG / PNG / BMP / TGA / GIF` (vía stb_image) con cache LRU en VRAM, downscale por tipo de asset y gate anti-overflow del heap.
+- **Fondo global personalizable** (640×448 nativo) + **pantalla de boot** personalizable con precarga progresiva de covers durante el splash.
+- **Renderer GS manual**: primitivas SPRITE / TRIANGLESTRIP / TRIANGLEFAN, clipping por software contra pantalla, alfa GS correcta (0x80 = 1.0), texturas RGBA32 subidas por bandas DMA (sin romper el límite de 16 bits de QWC).
 - **Launcher real**: `LoadExecPS2` con `argv[0]` apuntando al juego — los ports derivan la carpeta de sus datos de ahí (comportamiento estándar de la escena).
-- **Generador de ISO9660 propio**: path tables válidas, nombres 8.3, layout convencional — probado en PCSX2 y listo para grabar a DVD en PS2 real.
-- **Persistencia**: recuerda el último juego seleccionado (`portmenu.cfg` junto al medio).
-- **Multi-medio**: detecta el medio de arranque (`cdrom0:` en ISO/DVD, `host:` en PCSX2, `mass:`, `mc0:`, `hdd0:`) y resuelve todo relativo a él.
+- **Generador de ISO9660 propio**: path tables válidas (root 0x00, parents secuenciales), nombres 8.3, layout convencional — probado en PCSX2 y listo para grabar a DVD en PS2 real.
+- **Menú de configuración (SELECT / TRIÁNGULO)**: idiomas en vivo (Español / English / Português), ordenación alfabética A-Z / Z-A y **reordenación manual** de juegos (L2/R2 directamente en el carrusel).
+- **Persistencia**: guarda juego seleccionado, idioma, modo de orden y lista personalizada (`portmenu.cfg` en memory card / USB / host).
+- **Multi-medio**: detecta el medio de arranque (`cdrom0:` en ISO/DVD, `host:` en PCSX2, `mass:`, `mc0:`, `hdd0:`), con detección de HLE falso del emulador y fallback automático.
 
 ---
 
-## Estructura de una instalación
+## Controles
+
+| Botón | Acción |
+|---|---|
+| ← / → | Navegar en el carrusel |
+| L1 / R1 | Saltar 5 juegos |
+| X (Cross) | Lanzar el juego |
+| L2 / R2 | Mover el juego (reordenar biblioteca) |
+| SELECT o TRIÁNGULO | Menú de configuración (idioma, orden) |
+| START | Ir al primer juego |
 
 ```
 PORTMENU.iso                    <- TODO va dentro (menú + juegos + arte)
@@ -88,17 +98,6 @@ Las rutas relativas se resuelven contra el medio donde esté el `games.cfg`.
 
 ---
 
-## Controles
-
-| Botón | Acción |
-|---|---|
-| D-Pad | Mover la selección |
-| ✕ (Cross) | Lanzar el juego |
-| L1 / R1 | Cambiar de página |
-| START | Ir al primer juego |
-
----
-
 ## Compilar
 
 ### Requisitos (Windows)
@@ -137,8 +136,12 @@ El `build.bat` compila el ELF, arma el staging (`SYSTEM.CNF`, `GAMES.CFG`, junct
 
 ### PS2 real
 
-- **DVD**: graba `PORTMENU.iso` con ImgBurn (DVD-R, velocidad baja).
-- **USB / HDD / Memory Card**: copia `PORTMENU.ELF` + `ELFS/` + `ART/` a la raíz del dispositivo y lanza el ELF con uLaunchELF, FMCB u OPL. El menú detecta el medio y escanea ahí.
+> **Importante**: la PS2 real **no bootea CD-R/DVD-R grabados directamente** (verifica la licencia del disco original). La ISO sirve solo para PCSX2 o consolas con modchip. En hardware real usa una de estas vías:
+
+- **FMCB + USB (recomendado)**: copia `PORTMENU.ELF` + `ELFS/` + `ART/` (+ `N64/` si hay ROMs) a la raíz del USB y lanza el ELF desde FreeMcBoot. El scan detecta `mass:` automáticamente.
+- **OPL**: mismo esquema desde USB/HDD.
+- **Memory card**: copia todo a `mc0:/` y lanza con uLaunchELF.
+- **Modchip**: con chip instalado el CD/DVD grabado sí bootea como disco y el menú corre 100% desde `cdrom0:`.
 
 ---
 
@@ -152,8 +155,8 @@ El `build.bat` compila el ELF, arma el staging (`SYSTEM.CNF`, `GAMES.CFG`, junct
 
 ### VRAM y assets (asset_manager.c)
 - Allocator VRAM con free-list first-fit (4 MB, texturas desde `0x120000`).
-- Cache LRU (12 texturas) con **pin** para el fondo permanente y flag `failed` para no reintentar assets inexistentes cada frame.
-- Downscale automático (mitad sucesiva) hasta encuadrar — ahorra VRAM y evita overflows de DMA.
+- Cache LRU (24 texturas) con **pin** para el fondo permanente y flag `failed` para no reintentar assets inexistentes cada frame.
+- Downscale proporcional **por tipo de asset** (fondo 640×448, covers 320×480, logos 320×96) con gate previo por `stbi_info` — protege el heap del EE de decodificaciones gigantes.
 
 ### ISO (tools/mkiso.c)
 - Generador ISO9660 nivel 1 escrito desde cero (~450 líneas de C): PVD + terminator + path tables L/M + directory records + extents.

@@ -11,7 +11,7 @@ set(CMAKE_SH "C:/Windows/System32/cmd.exe" CACHE INTERNAL "Shell for execute_pro
 set(CMAKE_TRY_COMPILE_ENVIRONMENT "PS2DEV;PS2SDK" CACHE INTERNAL "Environment variables to pass to try_compile")
 
 # Hardcoded paths for PS2DEV (bypass environment variable issues in try_compile)
-set(PS2DEV_ROOT "C:/Users/gamer/OneDrive/Desktop/mkds-ps2/ps2dev" CACHE PATH "PS2DEV root directory")
+set(PS2DEV_ROOT "C:/Users/gamer/OneDrive/Desktop/ps2dev-official/ps2dev" CACHE PATH "PS2DEV root directory")
 
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR mips64r5900el)

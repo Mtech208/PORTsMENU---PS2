@@ -333,11 +333,26 @@ int main(int argc, char **argv)
             g_extent += (unsigned)(flat[i].size / SECTOR);
         }
 
-    for (int i = 0; i < nflat; i++)
+    for (int i = 0; i < nflat; i++) {
         if (!flat[i].is_dir) {
-            flat[i].extent = g_extent;
-            g_extent += (unsigned)((flat[i].size + SECTOR - 1) / SECTOR);
+            int dup = -1;
+            for (int k = 0; k < i; k++) {
+                if (!flat[k].is_dir && flat[k].size == flat[i].size && flat[k].size > 0) {
+                    if (strcmp(flat[k].path, flat[i].path) == 0 ||
+                        strcmp(flat[k].name, flat[i].name) == 0) {
+                        dup = k;
+                        break;
+                    }
+                }
+            }
+            if (dup >= 0) {
+                flat[i].extent = flat[dup].extent;
+            } else {
+                flat[i].extent = g_extent;
+                g_extent += (unsigned)((flat[i].size + SECTOR - 1) / SECTOR);
+            }
         }
+    }
 
     unsigned total = g_extent;
 
@@ -430,6 +445,15 @@ int main(int argc, char **argv)
     /* archivos */
     for (int i = 0; i < nflat; i++) {
         if (flat[i].is_dir) continue;
+        int already_written = 0;
+        for (int k = 0; k < i; k++) {
+            if (!flat[k].is_dir && flat[k].extent == flat[i].extent) {
+                already_written = 1;
+                break;
+            }
+        }
+        if (already_written) continue;
+
         FILE *src = fopen(flat[i].path, "rb");
         if (!src) {
             fprintf(stderr, "mkiso: no puedo abrir %s\n", flat[i].path);

@@ -15,6 +15,7 @@ PORTMENU.log
 
 # datos de usuario / juegos pesados (van fuera del repo)
 ELFS/
+N64/
 build/ART/
 EJEMPLO/
 tools/gcc_err.txt

@@ -114,6 +114,7 @@ static void draw_px(int x, int y, u32 color)
 
 void font_draw_glyph(int x, int y, unsigned char c, u32 color)
 {
+    if (x <= -8 || x >= SCREEN_W || y <= -8 || y >= SCREEN_H) return;
     if (c < 32 || c >= 128) c = '?';
     const u8 *g = font8x8[c - 32];
     for (int row = 0; row < 8; row++) {
@@ -128,6 +129,7 @@ void font_draw_glyph(int x, int y, unsigned char c, u32 color)
 void font_draw_glyph_scaled(int x, int y, unsigned char c, u32 color, int scale)
 {
     if (scale < 1) scale = 1;
+    if (x <= -8 * scale || x >= SCREEN_W || y <= -8 * scale || y >= SCREEN_H) return;
     if (c < 32 || c >= 128) c = '?';
     const u8 *g = font8x8[c - 32];
     for (int row = 0; row < 8; row++) {

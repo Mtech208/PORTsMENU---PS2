@@ -51,6 +51,10 @@ typedef struct {
     float particle_time;
     char error_msg[128];
     float error_time;
+    int show_settings;
+    int settings_sel;
+    int language;
+    int sort_mode;
 } UIState;
 
 void ui_init(void);
@@ -58,6 +62,14 @@ void ui_shutdown(void);
 void ui_load_games(void);
 void ui_save_config(void);
 void ui_load_config(void);
+
+/* precarga progresiva: 1 cover por llamada (para hacerlo durante el boot splash).
+   devuelve 1 cuando todos estan cargados. */
+int ui_precache_step(void);
+
+/* diagnostico del escaneo para mostrar en pantalla (PS2 real sin host/log) */
+int ui_get_diag_count(void);
+const char *ui_get_diag_line(int i);
 
 void ui_update(float dt);
 void ui_render(void);
@@ -68,6 +80,7 @@ GameEntry *ui_get_selected(void);
 int ui_get_selected_idx(void);
 int ui_get_game_count(void);
 
+void ui_set_boot_path(const char *path);
 void ui_launch_selected(void);
 
 #endif

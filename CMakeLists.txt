@@ -39,6 +39,9 @@ target_compile_definitions(PORTMENU PRIVATE
 
 # Core PS2 libs - fully manual GS init + DMA/GIF
 target_link_libraries(PORTMENU
+    elf-loader
+    patches
+    cdvd
     dma
     pad
     kernel

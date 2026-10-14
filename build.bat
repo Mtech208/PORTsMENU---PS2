@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 
 set REPO_ROOT=C:\Users\gamer\OneDrive\Desktop\PORTsMENUPS2
 set BUILD_DIR=%REPO_ROOT%\build
-set PS2DEV=C:\Users\gamer\OneDrive\Desktop\mkds-ps2\ps2dev
+set PS2DEV=C:\Users\gamer\OneDrive\Desktop\ps2dev-official\ps2dev
 set CMAKE_EXE=C:\Program Files\CMake\bin\cmake.exe
 set NINJA_EXE=C:\Users\gamer\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe\ninja.exe
 
