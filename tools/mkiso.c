@@ -130,6 +130,10 @@ static void unique_name(int parent_idx, const char *in, int is_dir, char *out)
 
 static void add_node(const char *path, const char *hostpath, int is_dir, long long size, int parent_idx)
 {
+    if (nflat >= MAX_NODES) {
+        fprintf(stderr, "mkiso: demasiados archivos (%d max)\n", MAX_NODES);
+        exit(1);
+    }
     Node *n = &flat[nflat];
     memset(n, 0, sizeof(*n));
     n->self = nflat;
@@ -152,10 +156,11 @@ static void build_dir(const char *dirpath, int parent_idx, int depth)
         return;
     }
     struct dirent *e;
-    char *names[512];
-    int nn = 0;
-    while ((e = readdir(d)) != NULL && nn < 512) {
+    int cap = 256, nn = 0;
+    char **names = malloc(cap * sizeof(char *));
+    while ((e = readdir(d)) != NULL) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        if (nn == cap) { cap *= 2; names = realloc(names, cap * sizeof(char *)); }
         names[nn++] = strdup(e->d_name);
     }
     closedir(d);
@@ -178,9 +183,26 @@ static void build_dir(const char *dirpath, int parent_idx, int depth)
         }
         free(names[i]);
     }
+    free(names);
 }
 
 /* ---------- ISO9660 ---------- */
+
+static int same_content(const char *a, const char *b)
+{
+    FILE *fa = fopen(a, "rb"), *fb = fopen(b, "rb");
+    int same = 1;
+    if (!fa || !fb) same = 0;
+    static unsigned char ba[65536], bb[65536];
+    while (same) {
+        size_t na = fread(ba, 1, sizeof(ba), fa), nb = fread(bb, 1, sizeof(bb), fb);
+        if (na != nb || memcmp(ba, bb, na) != 0) same = 0;
+        else if (na == 0) break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
 
 static unsigned g_extent = 18;
 static unsigned pt_size = 0;
@@ -296,15 +318,18 @@ int main(int argc, char **argv)
         }
     }
 
-    /* tamanos de directorios */
+    /* tamanos de directorios: un record NUNCA puede cruzar un limite de sector
+       (ECMA-119 6.8.1 / 9.1.1); si no cabe, se rellena con ceros hasta el siguiente */
     for (int i = 0; i < nflat; i++) {
         if (!flat[i].is_dir) continue;
-        long long sz = dir_record_size(&flat[i]) + dir_record_size(&flat[i]); /* . y .. */
+        long long off = 34 + 34; /* "." y ".." (nombre de 1 byte) */
         for (int j = 0; j < nflat; j++)
-            if (flat[j].parent == i && j != i)
-                sz += dir_record_size(&flat[j]);
-        if (sz < SECTOR) sz = SECTOR;
-        flat[i].size = ((sz + SECTOR - 1) / SECTOR) * SECTOR;
+            if (flat[j].parent == i && j != i) {
+                int l = dir_record_size(&flat[j]);
+                if ((off % SECTOR) + l > SECTOR) off = (off / SECTOR + 1) * SECTOR;
+                off += l;
+            }
+        flat[i].size = ((off + SECTOR - 1) / SECTOR) * SECTOR;
     }
 
     /* extents: path tables primero (layout convencional), luego dirs, luego archivos */
@@ -339,7 +364,7 @@ int main(int argc, char **argv)
             for (int k = 0; k < i; k++) {
                 if (!flat[k].is_dir && flat[k].size == flat[i].size && flat[k].size > 0) {
                     if (strcmp(flat[k].path, flat[i].path) == 0 ||
-                        strcmp(flat[k].name, flat[i].name) == 0) {
+                        same_content(flat[k].path, flat[i].path)) {
                         dup = k;
                         break;
                     }
@@ -428,19 +453,22 @@ int main(int argc, char **argv)
     free(pt);
 
     /* directorios */
-    unsigned char *db = malloc(1024 * 1024);
     for (int i = 0; i < nflat; i++) {
         if (!flat[i].is_dir) continue;
+        unsigned char *db = calloc(1, (size_t)flat[i].size); /* a cero: sin restos de otros dirs */
         int off2 = 0;
         off2 += dir_record(db + off2, &flat[i], 0);
         off2 += dir_record(db + off2, (flat[i].parent >= 0) ? &flat[flat[i].parent] : &flat[0], 1);
         for (int j = 0; j < nflat; j++)
-            if (flat[j].parent == i && j != i)
+            if (flat[j].parent == i && j != i) {
+                int l = dir_record_size(&flat[j]);
+                if ((off2 % SECTOR) + l > SECTOR) off2 = (off2 / SECTOR + 1) * SECTOR;
                 off2 += dir_record(db + off2, &flat[j], 2);
-        fseek(f, flat[i].extent * SECTOR, SEEK_SET);
+            }
+        fseek(f, (long)flat[i].extent * SECTOR, SEEK_SET);
         fwrite(db, 1, (size_t)flat[i].size, f);
+        free(db);
     }
-    free(db);
 
     /* archivos */
     for (int i = 0; i < nflat; i++) {
